@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Amazon Sentiment Analyzer - ML Project</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Sarabun', sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React Application -->
+    <script type="module">
+        import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        import { 
+            Search, Send, AlertCircle, CheckCircle2, History, BarChart3, 
+            Clock, Layers, Info, ChevronRight, MessageSquare, Sparkles, 
+            RefreshCw, Copy 
+        } from 'https://esm.sh/lucide-react@0.292.0';
+
+        // --- Configuration ---
+        const GEN_MODEL = "gemini-2.5-flash-preview-09-2025";
+
+        // ข้อมูลจำลองสำหรับ Error Analysis
+        const ERROR_EXAMPLES = [
+            { text: "The delivery was fast, but the product arrived broken. Terrible experience.", actual: "Negative", predicted: "Positive", reason: "Mixed Signal (โมเดลสับสนคำว่า fast กับ broken)" },
+            { text: "I guess it works if you don't mind it sounding like a jet engine.", actual: "Negative", predicted: "Positive", reason: "Sarcasm (การประชดประชัน)" },
+            { text: "Not the worst thing I've ever bought, but definitely not the best.", actual: "Neutral", predicted: "Positive", reason: "Negation (ความหมายกึ่งลบ)" },
+            { text: "It's okay. Not great, not bad. Just okay.", actual: "Neutral", predicted: "Positive", reason: "Ambiguity (ความกำกวม)" },
+            { text: "Great air fryer, but the manual is written in a language I don't understand.", actual: "Negative", predicted: "Positive", reason: "Mixed Signal (ชมตัวสินค้าแต่บ่นคู่มือ)" }
+        ];
+
+        const App = () => {
+            const [inputText, setInputText] = useState('');
+            const [activeTab, setActiveTab] = useState('predict');
+            const [loading, setLoading] = useState(false);
+            const [result, setResult] = useState(null);
+            const [history, setHistory] = useState([]);
+            
+            // State สำหรับ Gemini Integration
+            const [userApiKey, setUserApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
+            const [showKeyInput, setShowKeyInput] = useState(false);
+            const [aiInsight, setAiInsight] = useState('');
+            const [aiLoading, setAiLoading] = useState(false);
+            const [aiAction, setAiAction] = useState(null);
+
+            // ฟังก์ชันบันทึก API Key
+            const handleSaveKey = (e) => {
+                const val = e.target.value;
+                setUserApiKey(val);
+                localStorage.setItem('gemini_api_key', val);
+            };
+
+            // ฟังก์ชันเรียกใช้ Gemini API
+            const callGemini = async (prompt, systemPrompt = "") => {
+                if (!userApiKey) {
+                    setShowKeyInput(true);
+                    return "⚠️ Please configure the API Key in settings first.";
+                }
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${userApiKey}`;
+                const payload = {
+                    contents: [{ parts: [{ text: prompt }] }],
+                    systemInstruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined
+                };
+
+                let delay = 1000;
+                for (let i = 0; i < 3; i++) {
+                    try {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        if (!response.ok) {
+                            const errData = await response.json();
+                            throw new Error(errData.error?.message || 'API Error');
+                        }
+                        const data = await response.json();
+                        return data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    } catch (error) {
+                        console.error(error);
+                        if (i === 2) return `เกิดข้อผิดพลาด: ${error.message}`;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        delay *= 2;
+                    }
+                }
+            };
+
+            // เชื่อมต่อโมเดลจริง (Flask API)
+            const handlePredict = async () => {
+                if (!inputText.trim()) return;
+
+                setLoading(true);
+                setAiInsight('');
+                setAiAction(null);
+
+                try {
+                    // เรียกไปยัง Backend API ที่ path /api/predict
+                    const response = await fetch('/api/predict', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ text: inputText }),
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+
+                    const data = await response.json();
+
+                    const newResult = {
+                        label: data.sentiment,
+                        confidence: data.confidence,
+                        latency: data.latency.toFixed(2),
+                        version: 'v1.0.2-tfidf-lr',
+                        timestamp: new Date().toLocaleTimeString(),
+                        text: inputText
+                    };
+
+                    setResult(newResult);
+                    setHistory([newResult, ...history.slice(0, 4)]);
+                } catch (error) {
+                    console.error("Prediction error:", error);
+                    // Fallback กรณี Backend ไม่ตอบสนอง (ใช้ Mock เดิมชั่วคราวเพื่อให้ UI ไม่พัง)
+                    alert("ไม่สามารถเชื่อมต่อกับ Server ได้ กรุณาตรวจสอบว่า `python api.py` ทำงานอยู่หรือไม่");
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            // ✨ Gemini Feature: วิเคราะห์เชิงลึก
+            const handleGetAiInsight = async () => {
+                setAiLoading(true);
+                setAiAction('insight');
+                try {
+                    const systemPrompt = "You are an expert sentiment analyst. Analyze the provided product review in detail. Identify if there's sarcasm, hidden frustration, or specific product flaws that a simple keyword-based model might miss.";
+                    const prompt = `Review Text: "${inputText}"\nBaseline Model Result: ${result.label} (Confidence: ${result.confidence})\n\nProvide a concise analysis in Thai. Explain why the model might be right or wrong and what are the key takeaways.`;
+                    const response = await callGemini(prompt, systemPrompt);
+                    setAiInsight(response);
+                } catch (err) {
+                    setAiInsight("ไม่สามารถเชื่อมต่อกับ AI ได้ในขณะนี้ โปรดลองใหม่อีกครั้ง");
+                } finally {
+                    setAiLoading(false);
+                }
+            };
+
+            // ✨ Gemini Feature: ร่างข้อความตอบกลับ
+            const handleGenerateReply = async () => {
+                setAiLoading(true);
+                setAiAction('reply');
+                try {
+                    const systemPrompt = "You are a professional customer success manager at Amazon. Your goal is to respond to customer reviews with empathy and professionalism.";
+                    const prompt = `Review Text: "${inputText}"\nSentiment: ${result.label}\n\nWrite a professional, polite, and empathetic response to this customer in English, followed by a Thai translation. If it's a negative review, offer help or explain the return policy.`;
+                    const response = await callGemini(prompt, systemPrompt);
+                    setAiInsight(response);
+                } catch (err) {
+                    setAiInsight("ไม่สามารถร่างคำตอบได้ในขณะนี้ โปรดลองใหม่อีกครั้ง");
+                } finally {
+                    setAiLoading(false);
+                }
+            };
+
+            const copyToClipboard = (text) => {
+                navigator.clipboard.writeText(text).then(() => {
+                    alert('Copied to clipboard!');
+                });
+            };
+
+            const setExample = (text) => {
+                setInputText(text);
+                setResult(null);
+                setAiInsight('');
+            };
+
+            return React.createElement('div', { className: "min-h-screen bg-slate-50 text-slate-900 font-sans" },
+                // Navigation Bar
+                React.createElement('nav', { className: "bg-white border-b sticky top-0 z-20" },
+                    React.createElement('div', { className: "max-w-5xl mx-auto px-4 h-16 flex items-center justify-between" },
+                        React.createElement('div', { className: "flex items-center gap-2" },
+                            React.createElement('div', { className: "bg-blue-600 p-2 rounded-lg" },
+                                React.createElement(BarChart3, { className: "text-white w-5 h-5" })
+                            ),
+                            React.createElement('span', { className: "font-bold text-xl tracking-tight text-slate-800" },
+                                "Review Sentiment ", React.createElement('span', { className: "text-blue-600" }, "Analytics")
+                            )
+                        ),
+                        React.createElement('div', { className: "flex items-center gap-4" },
+                            React.createElement('div', { className: "relative" },
+                                React.createElement('button', { 
+                                    onClick: () => setShowKeyInput(!showKeyInput),
+                                    className: `flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-md border ${userApiKey ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`
+                                }, userApiKey ? 'API Connected' : 'Settings'),
+                                showKeyInput && React.createElement('div', { className: "absolute top-10 right-0 w-72 bg-white p-4 rounded-md shadow-lg border border-slate-200 z-50" },
+                                    React.createElement('label', { className: "text-xs font-bold text-slate-700 block mb-2" }, "API Configuration Key"),
+                                    React.createElement('input', { 
+                                        type: "password", 
+                                        value: userApiKey,
+                                        onChange: handleSaveKey,
+                                        placeholder: "Enter key...",
+                                        className: "w-full p-2 border border-slate-300 rounded text-sm mb-2 focus:border-blue-500 outline-none" 
+                                    }),
+                                    React.createElement('p', { className: "text-[10px] text-slate-400" }, "Stored locally in browser.")
+                                )
+                            ),
+                            React.createElement('button', {
+                                onClick: () => setActiveTab('predict'),
+                                className: `px-4 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'predict' ? 'bg-orange-100 text-orange-700' : 'text-slate-500 hover:bg-slate-100'}`
+                            }, "ทำนายผล (Predict)"),
+                            React.createElement('button', {
+                                onClick: () => setActiveTab('errors'),
+                                className: `px-4 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'errors' ? 'bg-orange-100 text-orange-700' : 'text-slate-500 hover:bg-slate-100'}`
+                            }, "วิเคราะห์ข้อผิดพลาด")
+                        )
+                    )
+                ),
+
+                // Main Content
+                React.createElement('main', { className: "max-w-5xl mx-auto p-4 md:p-8" },
+                    activeTab === 'predict' ? (
+                        React.createElement('div', { className: "grid md:grid-cols-3 gap-8" },
+                            // Input Section
+                            React.createElement('div', { className: "md:col-span-2 space-y-6" },
+                                React.createElement('div', { className: "bg-white rounded-2xl p-6 shadow-sm border border-slate-200" },
+                                    React.createElement('div', { className: "flex items-center justify-between mb-4" },
+                                        React.createElement('label', { className: "text-sm font-semibold text-slate-500 uppercase tracking-wider" }, "ใส่ข้อความรีวิวสินค้า"),
+                                        React.createElement('div', { className: "flex gap-2" },
+                                            React.createElement('button', { onClick: () => setExample("Great air fryer for the price. Really happy!"), className: "text-xs bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded" }, "ตัวอย่าง (+)"),
+                                            React.createElement('button', { onClick: () => setExample("Delivery was fast but it was a jet engine noise box."), className: "text-xs bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded" }, "ตัวอย่าง (Sarcasm)"),
+                                            React.createElement('button', { onClick: () => setExample("Very disappointed. Returning it."), className: "text-xs bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded" }, "ตัวอย่าง (-)")
+                                        )
+                                    ),
+                                    React.createElement('textarea', {
+                                        className: "w-full h-32 p-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent transition-all outline-none text-lg",
+                                        placeholder: "พิมพ์ข้อความรีวิวภาษาอังกฤษที่นี่...",
+                                        value: inputText,
+                                        onChange: (e) => setInputText(e.target.value)
+                                    }),
+                                    React.createElement('button', {
+                                        onClick: handlePredict,
+                                        disabled: loading || !inputText,
+                                        className: "w-full mt-4 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white font-bold py-4 rounded-xl shadow-lg shadow-orange-200 flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+                                    },
+                                        loading ? React.createElement('div', { className: "animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" }) : React.createElement(Send, { size: 20 }),
+                                        "วิเคราะห์เบื้องต้น (Predict)"
+                                    )
+                                ),
+
+                                // Prediction Result Display
+                                result && React.createElement('div', { className: "space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500" },
+                                    React.createElement('div', { className: "bg-white rounded-2xl p-8 shadow-md border border-slate-200" },
+                                        React.createElement('div', { className: "flex flex-col md:flex-row md:items-center justify-between gap-6" },
+                                            React.createElement('div', { className: "space-y-1" },
+                                                React.createElement('p', { className: "text-sm font-medium text-slate-500" }, "ผลการทำนาย (Baseline Model)"),
+                                                React.createElement('div', { className: "flex items-center gap-3" },
+                                                    React.createElement('span', {
+                                                        className: `text-4xl font-black uppercase tracking-tight ${
+                                                            result.label === 'Positive' ? 'text-emerald-600' :
+                                                            result.label === 'Negative' ? 'text-rose-600' : 'text-slate-600'
+                                                        }`
+                                                    }, result.label),
+                                                    result.label === 'Positive' ? React.createElement(CheckCircle2, { className: "text-emerald-500 w-8 h-8" }) : React.createElement(AlertCircle, { className: "text-rose-500 w-8 h-8" })
+                                                )
+                                            ),
+                                            React.createElement('div', { className: "flex-1 max-w-xs space-y-2" },
+                                                React.createElement('div', { className: "flex justify-between text-sm font-semibold" },
+                                                    React.createElement('span', null, "Confidence Score"),
+                                                    React.createElement('span', null, (result.confidence * 100).toFixed(1) + "%")
+                                                ),
+                                                React.createElement('div', { className: "w-full bg-slate-100 h-3 rounded-full overflow-hidden" },
+                                                    React.createElement('div', {
+                                                        className: `h-full transition-all duration-1000 ${result.label === 'Positive' ? 'bg-emerald-500' : 'bg-rose-500'}`,
+                                                        style: { width: `${result.confidence * 100}%` }
+                                                    })
+                                                )
+                                            )
+                                        ),
+                                        React.createElement('div', { className: "flex flex-wrap gap-4 mt-8 pt-8 border-t border-slate-100" },
+                                            React.createElement('div', { className: "flex items-center gap-2 text-slate-500" },
+                                                React.createElement(Layers, { size: 14 }),
+                                                React.createElement('span', { className: "text-xs font-mono" }, result.version)
+                                            ),
+                                            React.createElement('div', { className: "flex items-center gap-2 text-slate-500" },
+                                                React.createElement(Clock, { size: 14 }),
+                                                React.createElement('span', { className: "text-xs font-mono" }, result.latency + " ms")
+                                            ),
+                                            React.createElement('div', { className: "flex items-center gap-2 text-slate-500" },
+                                                React.createElement(Info, { size: 14 }),
+                                                React.createElement('span', { className: "text-xs" }, "Amazon Review Subset")
+                                            )
+                                        )
+                                    ),
+
+                                    // Advanced Analysis Section
+                                    React.createElement('div', { className: "bg-white rounded-xl p-6 shadow-sm border border-slate-200 mt-6" },
+                                        React.createElement('div', { className: "h-full" },
+                                            React.createElement('div', { className: "flex items-center justify-between mb-6 border-b border-slate-100 pb-4" },
+                                                React.createElement('div', { className: "flex items-center gap-2" },
+                                                    React.createElement(Search, { className: "text-slate-600 w-5 h-5" }),
+                                                    React.createElement('h3', { className: "font-semibold text-slate-800" }, "Advanced Analysis")
+                                                ),
+                                                React.createElement('div', { className: "flex gap-2" },
+                                                    React.createElement('button', {
+                                                        onClick: handleGetAiInsight,
+                                                        disabled: aiLoading,
+                                                        className: "text-xs bg-slate-800 hover:bg-slate-900 text-white px-3 py-2 rounded-md font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
+                                                    }, "Deep Analysis"),
+                                                    React.createElement('button', {
+                                                        onClick: handleGenerateReply,
+                                                        disabled: aiLoading,
+                                                        className: "text-xs bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-3 py-2 rounded-md font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
+                                                    }, "Draft Reply")
+                                                )
+                                            ),
+                                            aiLoading ? React.createElement('div', { className: "py-12 flex flex-col items-center justify-center space-y-4" },
+                                                React.createElement(RefreshCw, { className: "w-8 h-8 text-slate-400 animate-spin" }),
+                                                React.createElement('p', { className: "text-slate-500 font-medium" }, "Processing...")
+                                            ) : aiInsight ? React.createElement('div', { className: "bg-slate-50 border border-slate-200 rounded-lg p-5" },
+                                                React.createElement('div', { className: "flex justify-between items-center mb-3" },
+                                                    React.createElement('span', { className: "text-[10px] uppercase font-bold text-slate-500 tracking-wider" },
+                                                        aiAction === 'insight' ? "Analysis Result" : "Suggested Response"
+                                                    ),
+                                                    React.createElement('button', { onClick: () => setAiInsight(''), className: "text-slate-400 hover:text-slate-600" }, React.createElement(RefreshCw, { size: 14 }))
+                                                ),
+                                                React.createElement('div', { className: "text-slate-800 text-sm leading-relaxed whitespace-pre-line" }, aiInsight),
+                                                React.createElement('div', { className: "mt-4 flex justify-end" },
+                                                    React.createElement('button', {
+                                                        onClick: () => copyToClipboard(aiInsight),
+                                                        className: "text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1"
+                                                    }, React.createElement(Copy, { size: 12 }), " Copy Text")
+                                                )
+                                            ) : React.createElement('div', { className: "py-8 text-center text-slate-400 text-sm" },
+                                                "Select an option to analyze details."
+                                            )
+                                        )
+                                    )
+                                )
+                            ),
+
+                            // Sidebar: History
+                            React.createElement('div', { className: "space-y-6" },
+                                React.createElement('div', { className: "bg-white rounded-2xl p-6 shadow-sm border border-slate-200" },
+                                    React.createElement('div', { className: "flex items-center gap-2 mb-4" },
+                                        React.createElement(History, { className: "w-5 h-5 text-slate-400" }),
+                                        React.createElement('h3', { className: "font-bold" }, "ประวัติล่าสุด")
+                                    ),
+                                    React.createElement('div', { className: "space-y-3" },
+                                        history.length === 0 ? React.createElement('p', { className: "text-sm text-slate-400 italic" }, "ไม่มีข้อมูลการวิเคราะห์...") :
+                                        history.map((h, i) => React.createElement('div', { key: i, className: "p-3 bg-slate-50 rounded-lg border border-slate-100 flex justify-between items-center text-sm" },
+                                            React.createElement('div', { className: "truncate pr-2 w-32 font-medium" }, h.text),
+                                            React.createElement('span', { className: `px-2 py-0.5 rounded-full text-[10px] font-bold ${h.label === 'Positive' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}` }, h.label)
+                                        ))
+                                    )
+                                ),
+                                null
+                            )
+                        )
+                    ) :
+                    // Error Analysis View
+                    React.createElement('div', { className: "space-y-6 animate-in fade-in duration-500" },
+                        React.createElement('div', { className: "flex items-center justify-between mb-4" },
+                            React.createElement('div', null,
+                                React.createElement('h2', { className: "text-2xl font-bold" }, "Error Analysis Report"),
+                                React.createElement('p', { className: "text-slate-500" }, "ตัวอย่างรีวิวที่โมเดล Baseline (TF-IDF) ทำนายผิดพลาด")
+                            )
+                        ),
+                        React.createElement('div', { className: "grid gap-4" },
+                            ERROR_EXAMPLES.map((item, idx) => React.createElement('div', { key: idx, className: "bg-white rounded-xl p-6 border border-slate-200 shadow-sm flex flex-col md:flex-row gap-6 hover:border-indigo-200 transition-all group" },
+                                React.createElement('div', { className: "flex-1" },
+                                    React.createElement('div', { className: "flex items-center gap-2 mb-2 text-xs font-bold text-slate-400 uppercase tracking-widest" },
+                                        React.createElement(MessageSquare, { size: 14 }), " Review Text"
+                                    ),
+                                    React.createElement('p', { className: "text-slate-800 italic font-serif" }, `"${item.text}"`)
+                                ),
+                                React.createElement('div', { className: "flex gap-4 md:border-l border-slate-100 md:pl-6" },
+                                    React.createElement('div', { className: "min-w-[100px]" },
+                                        React.createElement('p', { className: "text-[10px] font-bold text-slate-400 uppercase" }, "Actual"),
+                                        React.createElement('p', { className: "text-sm font-bold text-slate-700" }, item.actual)
+                                    ),
+                                    React.createElement('div', { className: "min-w-[100px]" },
+                                        React.createElement('p', { className: "text-[10px] font-bold text-slate-400 uppercase" }, "Predicted"),
+                                        React.createElement('p', { className: "text-sm font-bold text-rose-600" }, item.predicted)
+                                    )
+                                ),
+                                React.createElement('div', { className: "min-w-[200px] bg-rose-50 p-4 rounded-lg group-hover:bg-indigo-50 transition-colors" },
+                                    React.createElement('p', { className: "text-[10px] font-bold text-rose-700 uppercase mb-1" }, "Reason for failure"),
+                                    React.createElement('p', { className: "text-sm text-rose-900 leading-snug" }, item.reason)
+                                )
+                            ))
+                        ),
+                        React.createElement('div', { className: "bg-white p-8 rounded-2xl border border-slate-200 mt-8 shadow-sm" },
+                            React.createElement('h3', { className: "font-bold text-lg mb-4 flex items-center gap-2" },
+                                React.createElement(Info, { size: 20, className: "text-blue-600" }),
+                                "Model Comparison"
+                            ),
+                            React.createElement('div', { className: "grid md:grid-cols-2 gap-6" },
+                                React.createElement('div', { className: "p-4 bg-slate-50 rounded-xl border border-slate-100" },
+                                    React.createElement('h4', { className: "font-bold text-slate-800 mb-2" }, "Baseline Model Method"),
+                                    React.createElement('p', { className: "text-sm text-slate-600" }, "TF-IDF counts words. It may get confused when positive words like 'fast' appear in a negative context like 'fast but broken'.")
+                                ),
+                                React.createElement('div', { className: "p-4 bg-blue-50 rounded-xl border border-blue-100" },
+                                    React.createElement('h4', { className: "font-bold text-blue-900 mb-2" }, "Advanced Model Method"),
+                                    React.createElement('p', { className: "text-sm text-blue-700" }, "Advanced models understand context and sentence relationships, allowing for better handling of sarcasm and nuanced feedback.")
+                                )
+                            )
+                        )
+                    )
+                ),
+
+                // Footer
+                React.createElement('footer', { className: "max-w-5xl mx-auto p-8 text-center text-slate-400 text-sm" },
+                    React.createElement('p', null, "© 2024 Product Review Sentiment Analysis Project")
+                )
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(React.createElement(App));
+    </script>
+</body>
+</html>
